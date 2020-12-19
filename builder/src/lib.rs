@@ -1,6 +1,29 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data::Struct, DataStruct, DeriveInput, Fields::Named};
+use syn::{
+    parse_macro_input, Data::Struct, DataStruct, DeriveInput, Fields::Named, GenericArgument,
+    PathArguments, Type, TypePath,
+};
+
+// Check that `ty` _is_ contained in the named wrapper (e.g. Vec, Option) and then
+// return Some(T) for the wrapped T if it is, otherwise None.
+fn wrapped_type<'a>(wrapper: &str, ty: &'a Type) -> std::option::Option<&'a Type> {
+    if let Type::Path(TypePath { ref path, .. }) = ty {
+        if path.segments.len() != 1 || path.segments[0].ident != wrapper {
+            return None;
+        }
+
+        if let PathArguments::AngleBracketed(ref inner) = path.segments[0].arguments {
+            if inner.args.len() != 1 {
+                return None;
+            }
+            if let Some(GenericArgument::Type(ref t)) = inner.args.first() {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -23,7 +46,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_fields = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote! { #name: std::option::Option<#ty> }
+        if wrapped_type("Option", &f.ty).is_some() {
+            quote! { #name: #ty }
+        } else {
+            quote! { #name: std::option::Option<#ty> }
+        }
     });
 
     // Empty initial values for when we construct the builder
@@ -35,17 +62,24 @@ pub fn derive(input: TokenStream) -> TokenStream {
     // The per-field unwrap as part of the build method
     let build_fields = fields.iter().map(|f| {
         let name = &f.ident;
-        quote! {
-            #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
+        if wrapped_type("Option", &f.ty).is_some() {
+            quote! {
+                #name: self.#name.clone()
+            }
+        } else {
+            quote! {
+                #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
+            }
         }
     });
 
     // The individual setter methods for each field
     let setter_methods = fields.iter().map(|f| {
         let name = &f.ident;
-        let ty = &f.ty;
+        let arg_type = wrapped_type("Option", &f.ty).unwrap_or(&f.ty);
+
         quote! {
-            pub fn #name(&mut self, #name: #ty) -> &mut Self {
+            pub fn #name(&mut self, #name: #arg_type) -> &mut Self {
                 self.#name = std::option::Option::Some(#name);
                 self
             }
@@ -61,7 +95,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #builder_ident {
             #(#setter_methods)*
 
-            fn build(&self) -> Result<#input_ident, Box<dyn std::error::Error>> {
+            fn build(&self) -> std::result::Result<#input_ident, std::boxed::Box<dyn std::error::Error>> {
                 std::result::Result::Ok(#input_ident {
                     #(#build_fields,)*
                 })

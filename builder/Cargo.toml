@@ -8,6 +8,11 @@ publish = false
 [lib]
 proc-macro = true
 
+[[bin]]
+doc = false
+name = "builder"
+path = "src/main.rs"
+
 [[test]]
 name = "tests"
 path = "tests/progress.rs"
