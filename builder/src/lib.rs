@@ -40,7 +40,7 @@ fn builder_attr(f: &Field) -> Option<&Attribute> {
 fn builder_attr_error<T: ToTokens>(t: T) -> Option<(bool, proc_macro2::TokenStream)> {
     Some((
         false,
-        syn::Error::new_spanned(t, "expected `builder(each = ...)`").to_compile_error(),
+        syn::Error::new_spanned(t, "expected `builder(each = \"...\")`").to_compile_error(),
     ))
 }
 
