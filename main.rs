@@ -6,27 +6,20 @@
 // To run the code:
 //     $ cargo run
 
-use derive_builder::Builder;
+use seq::seq;
 
-#[derive(Builder)]
-pub struct Command {
-    executable: String,
-    #[builder(each = "arg")]
-    args: Vec<String>,
-    #[builder(each = "env")]
-    env: Vec<String>,
-    current_dir: Option<String>,
+seq!(N in 1..4 {
+    fn f#N () -> u64 {
+        N * 2
+    }
+});
+
+fn f0() -> u64 {
+    100
 }
 
 fn main() {
-    let command = Command::builder()
-        .executable("cargo".to_owned())
-        .args(vec!["build".to_owned()])
-        // .arg("--release".to_owned())
-        .env(vec![])
-        .build()
-        .unwrap();
+    let sum = f0() + f1() + f2() + f3();
 
-    assert_eq!(command.executable, "cargo");
-    assert_eq!(command.args, vec!["build", "--release"]);
+    assert_eq!(sum, 100 + 2 + 4 + 6);
 }
