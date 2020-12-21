@@ -1,5 +1,4 @@
 use proc_macro::TokenStream;
-use quote::quote;
 use std::iter::FromIterator;
 use syn::{
     braced,
@@ -7,21 +6,17 @@ use syn::{
     parse_macro_input, Ident, LitInt, Token,
 };
 
-// Valid bodies are one of the following:
-//      { ... #ident ... }
-//      { ... PREF #ident ... }
-//      { ... PREF #ident #SUFF ... }
-//      { ... #( ... #ident ... )* ... }
-//      { ... #( ... PREF #ident ... )* ... }
-//      { ... #( ... PREF #ident #SUFF ... )* ... }
-//
-//  where '...' can also include other substitutions
+#[derive(Debug)]
+enum Section {
+    Passthrough(proc_macro2::TokenStream),
+    Replace(proc_macro2::TokenStream),
+}
 
 struct Seq {
     ident: Ident,
     from: usize,
     to: usize,
-    body: proc_macro2::TokenStream,
+    body: Vec<Section>,
 }
 impl Parse for Seq {
     fn parse(input: ParseStream) -> Result<Self> {
@@ -33,15 +28,75 @@ impl Parse for Seq {
 
         let content;
         let _braces = braced!(content in input);
-        let body = proc_macro2::TokenStream::parse(&content)?;
 
         Ok(Self {
             ident,
             from: from.base10_parse::<usize>()?,
             to: to.base10_parse::<usize>()?,
-            body,
+            body: split_body(&content)?,
         })
     }
+}
+
+fn split_body(input: ParseStream) -> Result<Vec<Section>> {
+    let everything = proc_macro2::TokenStream::parse(input)?;
+
+    let mut sections = Vec::new();
+    let mut tts = everything.into_iter().peekable();
+    let mut current = proc_macro2::TokenStream::new();
+
+    while let Some(tt) = tts.next() {
+        match tt {
+            // Potential start of a #( ... )* group
+            proc_macro2::TokenTree::Punct(ref p) if p.as_char() == '#' => {
+                if tts.peek().is_none() {
+                    continue;
+                }
+                let next = tts.next().unwrap();
+                match next {
+                    // #(...) #[...] #<...> ?
+                    proc_macro2::TokenTree::Group(ref g) => {
+                        if g.delimiter() == proc_macro2::Delimiter::Parenthesis {
+                            // #( ... )*
+                            if let Some(proc_macro2::TokenTree::Punct(ref p)) = tts.peek() {
+                                if p.as_char() == '*' {
+                                    tts.next(); // consume the '*'
+                                    sections.push(Section::Passthrough(current));
+                                    sections.push(Section::Replace(g.stream()));
+                                    current = proc_macro2::TokenStream::new();
+                                    continue;
+                                }
+                                panic!("Invalid seq! section");
+                            }
+                        }
+                        current.extend(proc_macro2::TokenStream::from_iter(vec![tt, next]));
+                    }
+
+                    // # something
+                    next => {
+                        current.extend(proc_macro2::TokenStream::from_iter(vec![tt, next]));
+                    }
+                }
+            }
+
+            // Literally anything other than a '#'
+            tt => {
+                current.extend(proc_macro2::TokenStream::from_iter(std::iter::once(tt)));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        sections.push(Section::Passthrough(current));
+    }
+
+    for section in sections.iter() {
+        match section {
+            Section::Passthrough(s) => eprintln!("PASSTHROUGH :: {}", s),
+            Section::Replace(s) => eprintln!("REPLACE :: {}", s),
+        }
+    }
+    Ok(sections)
 }
 
 fn replace_in_stream(
@@ -123,6 +178,23 @@ pub fn seq(input: TokenStream) -> TokenStream {
         body,
     } = parse_macro_input!(input as Seq);
 
-    let iterations = (from..to).map(|n| replace_in_stream(&ident, n, body.clone()));
-    TokenStream::from(quote! { #(#iterations)* })
+    let mut replaced = proc_macro2::TokenStream::new();
+    let replace_all = body.len() == 1;
+
+    for section in body {
+        let (should_replace, stream) = match section {
+            Section::Passthrough(s) => (replace_all, s),
+            Section::Replace(s) => (true, s),
+        };
+
+        if should_replace {
+            for n in from..to {
+                replaced.extend(replace_in_stream(&ident, n, stream.clone()));
+            }
+        } else {
+            replaced.extend(stream)
+        }
+    }
+
+    TokenStream::from(replaced)
 }
